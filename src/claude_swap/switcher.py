@@ -1845,15 +1845,6 @@ class ClaudeAccountSwitcher:
         plans = self.fable_by_account()
         return [num for num in candidates if plans.get(num) is True]
 
-    def notice_no_fable(self, identifier: str, *, json_output: bool = False) -> None:
-        account_num = self._resolve_account_identifier(identifier)
-        if self.fable_by_account().get(account_num) is False:
-            print(
-                f"Notice: Account-{account_num} has no Fable.",
-                file=sys.stderr if json_output else sys.stdout,
-                flush=True,
-            )
-
     def switchable_account_numbers(self) -> list[str]:
         """Usable, enabled accounts in rotation order, including polling targets.
 
@@ -5586,8 +5577,6 @@ class ClaudeAccountSwitcher:
                 markers += f" {bold_accent('(active)')}"
             if self._disabled_from_data(seq_data, str(num)):
                 markers += f" {muted('(disabled)')}"
-            if entries[str(num)].has_fable is False:
-                markers += f" {muted('(no Fable)')}"
             print(f"  {num}: {label} {muted(f'[{tag}]')}{markers}")
             for line in _usage_entry_lines(entries[str(num)]):
                 print(f"     {line}")
@@ -5751,10 +5740,9 @@ class ClaudeAccountSwitcher:
             entry = self._active_account_usage(
                 account_num, current_email, current_org_uuid
             )
-            marker = f" {muted('(no Fable)')}" if entry.has_fable is False else ""
             print(
                 f"{bolded('Status:')} {accent(f'Account-{account_num}')} "
-                f"({current_email} {muted(f'[{tag}]')}){marker}"
+                f"({current_email} {muted(f'[{tag}]')})"
             )
             print(f"  {dimmed(f'Total managed accounts: {total}')}")
             for line in _usage_entry_lines(entry):
@@ -6297,8 +6285,6 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data()
         if target_account not in data.get("accounts", {}):
             raise AccountNotFoundError(f"Account-{target_account} does not exist")
-
-        self.notice_no_fable(target_account, json_output=json_output)
 
         # Short-circuit a no-op before mutating (issue #79). A self-switch
         # would first back up the live credentials into the target slot —

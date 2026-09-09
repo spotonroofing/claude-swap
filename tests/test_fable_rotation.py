@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_swap import cli
+from claude_swap import cli, oauth
 from claude_swap.autoswitch import TickOutcome
 from claude_swap.menubar import format_account_label
 from claude_swap.settings import settings_path
@@ -133,7 +133,7 @@ def test_plan_exclusion_does_not_stop_polling(fleet):
 
 
 @pytest.mark.parametrize("identifier", ["2", "account2@example.com"])
-def test_manual_switch_succeeds_with_notice(fleet, identifier, capsys):
+def test_manual_switch_succeeds_without_notice(fleet, identifier, capsys):
     record(fleet, {"2": reading(fable=False)})
     with patch.object(fleet.switcher, "list_accounts"):
         result = fleet.switcher.switch_to(identifier, json_output=True)
@@ -141,19 +141,19 @@ def test_manual_switch_succeeds_with_notice(fleet, identifier, capsys):
     assert result["to"]["number"] == 2
     output = capsys.readouterr()
     assert output.out == ""
-    assert output.err.splitlines() == ["Notice: Account-2 has no Fable."]
+    assert output.err == ""
 
 
-def test_manual_switch_human_notice(fleet, capsys):
+def test_manual_switch_human_without_notice(fleet, capsys):
     record(fleet, {"2": reading(fable=False)})
     with patch.object(fleet.switcher, "list_accounts"):
         fleet.switcher.switch_to("2")
     assert fleet.active_number() == 2
-    assert capsys.readouterr().out.splitlines().count("Notice: Account-2 has no Fable.") == 1
+    assert "no Fable" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("identifier", ["2", "account2@example.com"])
-def test_run_remains_available_with_notice(fleet, identifier, capsys):
+def test_run_remains_available_without_notice(fleet, identifier, capsys):
     record(fleet, {"2": reading(fable=False)})
     with (
         patch("claude_swap.cli.ClaudeAccountSwitcher", return_value=fleet.switcher),
@@ -161,15 +161,18 @@ def test_run_remains_available_with_notice(fleet, identifier, capsys):
     ):
         cli._run_command([identifier])
     assert run.call_args.args[0] == identifier
-    assert capsys.readouterr().out.splitlines() == ["Notice: Account-2 has no Fable."]
+    assert capsys.readouterr().out == ""
 
 
 def test_list_and_status_expose_all_three_plan_states(fleet, capsys):
     record(fleet, {"1": reading(), "2": reading(fable=False)})
     fleet.switcher.list_accounts(fetch=set())
-    headers = [line for line in capsys.readouterr().out.splitlines() if "@example.com" in line]
+    output = capsys.readouterr().out
+    headers = [line for line in output.splitlines() if "@example.com" in line]
+    account_two = output.split("  2:", 1)[1].split("  3:", 1)[0]
+    assert "Fable" not in account_two
     assert len(headers) == 3
-    assert ["no Fable" in line for line in headers] == [False, True, False]
+    assert ["no Fable" in line for line in headers] == [False, False, False]
     with patch.object(fleet.switcher, "_active_account_usage", return_value=UsageEntry(last_good=reading())):
         payload = fleet.switcher.status(json_output=True)
     assert [a["has_fable"] for a in payload["accounts"]] == [True, False, None]
@@ -180,7 +183,7 @@ def test_list_and_status_expose_all_three_plan_states(fleet, capsys):
 def test_status_human_no_fable(fleet, capsys):
     with patch.object(fleet.switcher, "_active_account_usage", return_value=UsageEntry(last_good=reading(fable=False))):
         fleet.switcher.status()
-    assert "no Fable" in capsys.readouterr().out.splitlines()[0]
+    assert "Fable" not in capsys.readouterr().out
 
 
 def test_menubar_plan_tag():
@@ -229,3 +232,31 @@ def test_daemon_rechecks_plan_before_switching(fleet):
         assert tick(fleet) == TickOutcome.BLOCKED
     switch.assert_not_called()
     assert fleet.events[-1].reason == "fable-unavailable"
+
+
+@pytest.mark.parametrize("strategy", ["best", "consume-first"])
+def test_scheduled_refresh_changes_plan_before_same_tick_decision(fleet, strategy):
+    fleet.engine.settings = replace(fleet.settings, strategy=strategy)
+    values = {"1": reading(100), "2": reading(fable=False), "3": reading(100)}
+    record(fleet, values)
+    assert tick(fleet) == TickOutcome.BLOCKED
+    assert "2" not in fleet.switcher.rotation_account_numbers()
+
+    def fetch(num, *_args, **_kwargs):
+        return oauth.UsageOutcome(values[num])
+
+    # Keep the same engine and switcher throughout. Only the server's usage
+    # response changes; the real scheduled collector writes the new reading.
+    with patch("claude_swap.oauth.try_fetch_usage_for_account", side_effect=fetch) as fetched:
+        for has_fable, expected in [(True, TickOutcome.SWITCHED), (False, TickOutcome.BLOCKED)]:
+            fleet.clock.advance(1000)
+            values["2"] = reading(fable=has_fable)
+            fetched.reset_mock()
+            assert fleet.engine.tick() == expected
+            assert any(call.args[0] == "2" for call in fetched.call_args_list)
+            entry = fleet.switcher._usage_store.entries(IDENTITIES)["2"]
+            assert entry.fetched_at == fleet.clock()
+            assert entry.has_fable is has_fable
+            assert ("2" in fleet.switcher.rotation_account_numbers()) is has_fable
+            if has_fable:
+                assert fleet.events[-1].to_ref["number"] == 2

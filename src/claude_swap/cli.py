@@ -188,7 +188,6 @@ Examples:
         manager = SessionManager(switcher)
 
         if args.account is not None:
-            switcher.notice_no_fable(args.account)
             manager.run(
                 args.account,
                 tail,
@@ -201,7 +200,6 @@ Examples:
         # No account given: resolve from the current directory's mapping.
         slot, email = switcher.slot_for_directory(os.getcwd())
         if slot is not None:
-            switcher.notice_no_fable(slot)
             manager.run(
                 slot,
                 tail,
