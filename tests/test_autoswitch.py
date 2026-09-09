@@ -37,6 +37,9 @@ from claude_swap.settings import AutoSwitchSettings
 from claude_swap.switcher import ClaudeAccountSwitcher
 
 
+pytestmark = pytest.mark.usefixtures("unrestricted_rotation")
+
+
 class FakeClock:
     def __init__(self, now: float = 1_000_000.0):
         self.now = now

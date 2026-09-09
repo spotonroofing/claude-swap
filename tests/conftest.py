@@ -878,3 +878,15 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.get_closest_marker("no_keychain_fake"):
             item.add_marker(pytest.mark.xdist_group("real-keychain"))
+
+
+@pytest.fixture
+def unrestricted_rotation(monkeypatch):
+    """Existing quota/credential tests use plans without scoped model readings.
+
+    Exercise their original policy with the Fable requirement opted out;
+    test_fable_rotation covers the fork's default against persisted readings.
+    """
+    from claude_swap.switcher import ClaudeAccountSwitcher
+
+    monkeypatch.setattr(ClaudeAccountSwitcher, "require_fable", lambda self: False)

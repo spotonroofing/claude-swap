@@ -5387,6 +5387,7 @@ class TestPurge:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unrestricted_rotation")
 class TestSwitchSkipsBrokenSlots:
     """Issue #41: --switch must skip slots whose stored creds or config are
     missing rather than aborting. --switch-to N must keep failing but with an
@@ -5519,7 +5520,7 @@ class TestSwitchSkipsBrokenSlots:
 
         out = capsys.readouterr().out
         assert "Skipping Account-2" in out
-        assert "No other accounts have valid" in out
+        assert "No other accounts are eligible for rotation" in out
 
         # Active account unchanged.
         data = s._get_sequence_data()
@@ -5628,10 +5629,11 @@ class TestSwitchSkipsBrokenSlots:
         s.set_account_disabled("1", True)
         s.set_account_disabled("2", True)
 
-        with pytest.raises(ConfigError, match="No accounts remain in rotation"):
+        with pytest.raises(ConfigError, match="No accounts remain eligible for rotation"):
             s.switch()
 
 
+@pytest.mark.usefixtures("unrestricted_rotation")
 class TestUsageAwareSwitch:
     """--switch --strategy best / next-available pick targets by remaining 5h/7d
     quota. `best` only switches when another account is provably better and
@@ -8731,6 +8733,7 @@ class TestAddAccountAlias:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unrestricted_rotation")
 class TestDisableEnableAccount:
     """`cswap disable`/`cswap enable`: park a managed account out of automatic
     rotation without removing it. Disabled slots are skipped by the auto-switch

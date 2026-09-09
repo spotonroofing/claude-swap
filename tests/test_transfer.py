@@ -925,6 +925,7 @@ class TestCleanHomeActivation:
                 seq = dst._get_sequence_data()
                 assert seq["activeAccountNumber"] == 1
 
+    @pytest.mark.usefixtures("unrestricted_rotation")
     def test_switch_rotate_after_import_uses_active_from_envelope(
         self, temp_home: Path
     ):

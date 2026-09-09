@@ -114,6 +114,13 @@ For cron/systemd timers, `--once` reports the outcome in its exit code (`0` swit
 
 Defaults like the threshold and cooldown are configurable with `cswap config set autoswitch.threshold 80` — flags override them (see [Configuration](#configuration)).
 
+Willem's fork (`0.27.0b2`) requires Fable for automatic selection by default, including bare `cswap switch` and both usage-aware strategies. The latest persisted usage reading must contain a scoped window named `Fable` (case-insensitive); no window means no Fable, and no reading means unknown. Both are skipped. These accounts keep being polled and become eligible as soon as a reading with Fable is stored, subject to the usual quota and enable/disable rules. This does not change the separate `--model Fable` quota threshold setting.
+
+To opt out, add top-level `"require_fable": false` to the existing backup-root `settings.json` (on macOS, `~/.claude-swap-backup/settings.json`), preserving its other settings. Omitting the key or setting it to `true` requires Fable. The rule reads this file on each decision; no daemon restart is needed for a flag change.
+
+Accounts without Fable remain listed with `(no Fable)` on their header, and `cswap status --json` includes an `accounts` array with `has_fable: true`, `false`, or `null` per account (`cswap list --json` also includes it). Explicit `cswap switch <num|email>` and `cswap run <num|email>` still work and print a one-line no-Fable notice (on stderr for JSON switches). `cswap disable` and `cswap enable` remain separate manual controls.
+
+
 </details>
 
 ### Run multiple accounts at the same time (session mode)

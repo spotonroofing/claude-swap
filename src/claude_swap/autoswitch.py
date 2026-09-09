@@ -1065,7 +1065,7 @@ class AutoSwitchEngine:
         # incident, the scoping, and the release.
         api_key_candidates = (
             [n for n in candidates if self.switcher.account_kind_for(n) == "api_key"]
-            if settings.include_api_key_accounts
+            if settings.include_api_key_accounts and not self.switcher.require_fable()
             else []
         )
         if (
@@ -1768,11 +1768,14 @@ class AutoSwitchEngine:
     ) -> tuple[list[str], bool, float | None]:
         """Filter and rank OAuth candidates for this tick's trigger.
 
-        Returns ``(ordered, any_known, active_reset_ts)``. Pure — no emits,
-        no state writes — so the consume-first two-phase commit can run it
+        Returns ``(ordered, any_known, active_reset_ts)``. Reads persisted plans
+        without emits or state writes, so the consume-first two-phase commit can run it
         twice per tick: on the stored snapshot to decide provisionally, then
         on the escalated refetch to re-verify before switching.
         """
+        if self.switcher.require_fable():
+            plans = self.switcher.fable_by_account()
+            oauth_candidates = [n for n in oauth_candidates if plans.get(n) is True]
         # consume-first ranks by soonest weekly reset; a proactive (below-
         # threshold) target must reset strictly sooner than where we are.
         active_reset_ts = (
@@ -2103,6 +2106,12 @@ class AutoSwitchEngine:
         trigger: str,
         left: tuple[float | None, float],
     ) -> TickOutcome:
+        if (
+            self.switcher.require_fable()
+            and self.switcher.fable_by_account().get(number) is not True
+        ):
+            self._emit(NoSwitchEvent(reason="fable-unavailable"))
+            return TickOutcome.BLOCKED
         if self.dry_run:
             current = self.switcher.current_account_number()
             current_email = self.switcher.account_email(current) if current else ""

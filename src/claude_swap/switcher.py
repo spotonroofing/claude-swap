@@ -85,7 +85,7 @@ from claude_swap.paths import (
 )
 from claude_swap.process_detection import get_running_instances
 from claude_swap import poll_policy
-from claude_swap.settings import load_settings, parse_model_names, settings_path
+from claude_swap.settings import _read_raw, load_settings, parse_model_names, settings_path
 from claude_swap.usage_store import (
     FetchRecord,
     UsageEntry,
@@ -1822,13 +1822,46 @@ class ClaudeAccountSwitcher:
         self._poll_inputs_cache = (mtime, inputs)
         return inputs
 
+    def require_fable(self) -> bool:
+        """The fork's plan requirement; only an explicit JSON false opts out."""
+        return _read_raw(settings_path(self.backup_dir)).get("require_fable") is not False
+
+    def fable_by_account(self) -> dict[str, bool | None]:
+        """Read plan eligibility from disk without fetching usage or credentials."""
+        data = self._get_sequence_data() or {}
+        identities = {
+            num: (info.get("email", ""), info.get("organizationUuid", "") or "")
+            for num, info in data.get("accounts", {}).items()
+        }
+        return {
+            num: entry.has_fable
+            for num, entry in self._usage_store.entries(identities).items()
+        }
+
+    def rotation_account_numbers(self) -> list[str]:
+        candidates = self.switchable_account_numbers()
+        if not self.require_fable():
+            return candidates
+        plans = self.fable_by_account()
+        return [num for num in candidates if plans.get(num) is True]
+
+    def notice_no_fable(self, identifier: str, *, json_output: bool = False) -> None:
+        account_num = self._resolve_account_identifier(identifier)
+        if self.fable_by_account().get(account_num) is False:
+            print(
+                f"Notice: Account-{account_num} has no Fable.",
+                file=sys.stderr if json_output else sys.stdout,
+                flush=True,
+            )
+
     def switchable_account_numbers(self) -> list[str]:
-        """Account numbers in rotation order eligible for automatic selection.
+        """Usable, enabled accounts in rotation order, including polling targets.
 
         Excludes slots without usable stored backups and slots the user has
         disabled (``cswap disable``). Disabled slots stay managed and remain
         valid explicit ``cswap switch <num|email>`` targets — they are only
         held out of automatic rotation and the usage-aware strategies.
+        Plan eligibility is applied separately so no-Fable accounts keep polling.
         """
         data = self._get_sequence_data() or {}
         return [
@@ -5313,12 +5346,8 @@ class ClaudeAccountSwitcher:
         Ties (including current-vs-other) resolve in favour of staying put.
         Never raises on network failure.
         """
-        data = self._get_sequence_data() or {}
         others = [
-            str(n) for n in data.get("sequence", [])
-            if str(n) != str(current_num)
-            and self._account_is_switchable(str(n))
-            and not self._disabled_from_data(data, str(n))
+            num for num in self.rotation_account_numbers() if num != str(current_num)
         ]
         if not others:
             return None, "none"
@@ -5494,6 +5523,7 @@ class ClaudeAccountSwitcher:
                     login_expires_at=oauth.login_expires_at_iso(creds),
                 )
             )
+            accounts[-1]["has_fable"] = entry.has_fable
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "activeAccountNumber": active_num,
@@ -5556,6 +5586,8 @@ class ClaudeAccountSwitcher:
                 markers += f" {bold_accent('(active)')}"
             if self._disabled_from_data(seq_data, str(num)):
                 markers += f" {muted('(disabled)')}"
+            if entries[str(num)].has_fable is False:
+                markers += f" {muted('(no Fable)')}"
             print(f"  {num}: {label} {muted(f'[{tag}]')}{markers}")
             for line in _usage_entry_lines(entries[str(num)]):
                 print(f"     {line}")
@@ -5664,6 +5696,7 @@ class ClaudeAccountSwitcher:
             "organizationUuid": org_uuid,
             "isOrganization": bool(org_uuid),
             "managed": True,
+            "has_fable": entry.has_fable,
             "usageStatus": status,
             "usage": usage,
         }
@@ -5691,7 +5724,10 @@ class ClaudeAccountSwitcher:
     def status(self, json_output: bool = False) -> dict | None:
         """Display current account status (or return the schema-v1 payload)."""
         if json_output:
-            return self._build_status_payload()
+            payload = self._build_status_payload()
+            # Include every account without causing additional usage requests.
+            payload["accounts"] = self.list_accounts(json_output=True, fetch=set())["accounts"]
+            return payload
 
         identity = self._get_current_account()
         if identity is None:
@@ -5712,14 +5748,15 @@ class ClaudeAccountSwitcher:
         if account_num:
             tag = self._get_display_tag(current_email, org_name, current_org_uuid)
             total = len(data.get("accounts", {}))
-            print(
-                f"{bolded('Status:')} {accent(f'Account-{account_num}')} "
-                f"({current_email} {muted(f'[{tag}]')})"
-            )
-            print(f"  {dimmed(f'Total managed accounts: {total}')}")
             entry = self._active_account_usage(
                 account_num, current_email, current_org_uuid
             )
+            marker = f" {muted('(no Fable)')}" if entry.has_fable is False else ""
+            print(
+                f"{bolded('Status:')} {accent(f'Account-{account_num}')} "
+                f"({current_email} {muted(f'[{tag}]')}){marker}"
+            )
+            print(f"  {dimmed(f'Total managed accounts: {total}')}")
             for line in _usage_entry_lines(entry):
                 print(f"  {line}")
         else:
@@ -5869,10 +5906,13 @@ class ClaudeAccountSwitcher:
                 raise ConfigError("No accounts are managed yet")
 
             target = str(preferred)
+            eligible = self.rotation_account_numbers()
             target_disabled = self._disabled_from_data(data, target)
-            if target_disabled or not self._account_is_switchable(target):
+            if target not in eligible:
                 if target_disabled:
                     reason = console_reason = "(disabled)"
+                elif self._account_is_switchable(target):
+                    reason = console_reason = "(no Fable or plan unknown)"
                 else:
                     reason = "(no stored credentials/config)"
                     console_reason = (
@@ -5884,10 +5924,7 @@ class ClaudeAccountSwitcher:
                 else:
                     print(f"{accent('Skipping')} Account-{target} {console_reason}")
                 fallback = next(
-                    (str(num) for num in sequence
-                     if str(num) != target
-                     and not self._disabled_from_data(data, str(num))
-                     and self._account_is_switchable(str(num))),
+                    (num for num in eligible if num != target),
                     None,
                 )
                 if not fallback:
@@ -5895,8 +5932,8 @@ class ClaudeAccountSwitcher:
                         self._account_is_switchable(str(num)) for num in sequence
                     ):
                         raise ConfigError(
-                            "No accounts remain in rotation. Re-enable one with: "
-                            "cswap enable <num|email>"
+                            "No accounts remain eligible for rotation. Check enabled "
+                            "accounts and their stored Fable readings."
                         )
                     raise ConfigError(
                         "No managed accounts have valid stored credentials/config. "
@@ -6077,6 +6114,7 @@ class ClaudeAccountSwitcher:
         if strategy == "next-available":
             self._warn_inert_models(usage, models, json_output, warnings)
 
+        plans = self.fable_by_account() if self.require_fable() else None
         next_account: str | None = None
         skipped_exhausted: list[str] = []
         for offset in range(1, len(sequence)):
@@ -6098,6 +6136,14 @@ class ClaudeAccountSwitcher:
                         f"(no stored credentials/config, re-add with "
                         f"cswap --add-account --slot {candidate})"
                     )
+                continue
+            if plans is not None and plans.get(candidate) is not True:
+                reason = "no Fable" if plans.get(candidate) is False else "Fable plan unknown"
+                message = f"Skipped Account-{candidate} ({reason})"
+                if json_output:
+                    warnings.append(message)
+                else:
+                    print(message)
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -6152,11 +6198,10 @@ class ClaudeAccountSwitcher:
                 return self._switch_noop(
                     strategy=strategy_label, reason="no-valid-target",
                     to_ref=current_ref, warnings=warnings,
-                    message="No other accounts have valid stored credentials/config.",
+                    message="No other accounts are eligible for rotation.",
                 )
             print(dimmed(
-                "No other accounts have valid stored credentials/config.\n"
-                "Re-add a skipped slot with: cswap --add-account --slot <number>"
+                "No other accounts are eligible for rotation."
             ))
             return None
 
@@ -6252,6 +6297,8 @@ class ClaudeAccountSwitcher:
         data = self._get_sequence_data()
         if target_account not in data.get("accounts", {}):
             raise AccountNotFoundError(f"Account-{target_account} does not exist")
+
+        self.notice_no_fable(target_account, json_output=json_output)
 
         # Short-circuit a no-op before mutating (issue #79). A self-switch
         # would first back up the live credentials into the target slot —

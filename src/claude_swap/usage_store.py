@@ -311,6 +311,16 @@ class UsageEntry:
     # fields while exposing whether a fetch lease is currently live.
     claim_until: float | None = None
 
+    @property
+    def has_fable(self) -> bool | None:
+        """Plan signal from the latest stored reading, independent of quota age."""
+        if self.last_good is None:
+            return None
+        return any(
+            window["name"].casefold() == "fable"
+            for window in self.last_good.get("scoped", [])
+        )
+
     def fresh(self, now: float, ttl: float = SERVE_TTL_S) -> bool:
         return self.fetched_at is not None and (now - self.fetched_at) <= ttl
 

@@ -32,6 +32,7 @@ from claude_swap import pace
 from claude_swap.exceptions import ClaudeSwitchError, CredentialReadError
 from claude_swap.printer import warning
 from claude_swap.switcher import SENTINEL_NOTES
+from claude_swap.usage_store import UsageEntry
 
 ICON = "⇄"
 REFRESH_CHOICES: tuple[int, ...] = (30, 60, 300)
@@ -283,10 +284,13 @@ def format_account_label(
     alias: str | None = None,
     disabled: bool = False,
     fetched_at: float | None = None,
+    has_fable: bool | None = None,
 ) -> str:
     """Build one account row's menu label."""
     label = f"{alias}  ({email})" if alias else email
     marker = "  (disabled)" if disabled else ""
+    if has_fable is False:
+        marker += "  (no Fable)"
     return f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}"
 
 
@@ -763,7 +767,8 @@ def run(switcher) -> int:
             for num, email, is_active, display, _last_good, alias, disabled, fetched_at in self.snapshot["accounts"]:
                 item = rumps.MenuItem(
                     format_account_label(
-                        num, email, display, alias=alias, disabled=disabled, fetched_at=fetched_at
+                        num, email, display, alias=alias, disabled=disabled, fetched_at=fetched_at,
+                        has_fable=UsageEntry(last_good=_last_good).has_fable,
                     ),
                     callback=self._make_switch_to(num),
                 )

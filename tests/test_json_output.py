@@ -379,6 +379,7 @@ class TestStatusJson:
         assert switcher.status(json_output=True) == {
             "schemaVersion": SCHEMA_VERSION,
             "active": None,
+            "accounts": [],
         }
 
     def test_status_unmanaged(self, temp_home: Path, mock_claude_config: Path):
